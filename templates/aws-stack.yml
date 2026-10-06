@@ -157,6 +157,7 @@ Metadata:
         - ScaleUpMinSize
         - ScaleDownSchedule
         - ScaleDownMinSize
+        - WarmPoolEnabled
 
       - Label:
           default: Cost Allocation Configuration
@@ -331,6 +332,14 @@ Parameters:
     Type: Number
     Default: 0
     MinValue: 0
+
+  WarmPoolEnabled:
+    Type: String
+    Description: Enable ASG warm pool to keep pre-initialized instances ready for faster job starts.
+    AllowedValues:
+      - "true"
+      - "false"
+    Default: "false"
 
   ScaleOutCooldownPeriod:
     Description: Cooldown period in seconds before allowing another scale-out event. Prevents rapid scaling and reduces costs from frequent instance launches.
@@ -1641,6 +1650,9 @@ Conditions:
         - !Condition HasVariableSize
         - !Not [ !Condition IsLambdaArchitectureArm64 ]
 
+    WarmPoolEnabled:
+      !Equals [ !Ref WarmPoolEnabled, "true" ]
+
 Mappings:
   ECRManagedPolicy:
     none                  : { Policy: '' }
@@ -2149,6 +2161,7 @@ Resources:
           - Sid: TerminateInstance
             Effect: Allow
             Action:
+              - autoscaling:CompleteLifecycleAction
               - autoscaling:SetInstanceHealth
               - autoscaling:TerminateInstanceInAutoScalingGroup
             Resource: !Sub arn:${AWS::Partition}:autoscaling:${AWS::Region}:${AWS::AccountId}:autoScalingGroup:*:autoScalingGroupName/${AWS::StackName}-AgentAutoScaleGroup-*
@@ -2457,6 +2470,7 @@ Resources:
                   $Env:AWS_REGION="${AWS::Region}"
                   $Env:ENABLE_EC2_LOG_RETENTION_POLICY="${EnableEC2LogRetentionPolicy}"
                   $Env:EC2_LOG_RETENTION_DAYS="${EC2LogRetentionDays}"
+                  $Env:BUILDKITE_WARM_POOL_ENABLED="${WarmPoolEnabled}"
                   powershell -file C:\buildkite-agent\bin\bk-install-elastic-stack.ps1 >> C:\buildkite-agent\elastic-stack.log
                   </powershell>
                 - LocalSecretsBucket: !If
@@ -2573,6 +2587,7 @@ Resources:
                   RESOURCE_LIMITS_IO_WEIGHT="${ResourceLimitsIOWeight}" \
                   ENABLE_EC2_LOG_RETENTION_POLICY="${EnableEC2LogRetentionPolicy}" \
                   EC2_LOG_RETENTION_DAYS="${EC2LogRetentionDays}" \
+                  BUILDKITE_WARM_POOL_ENABLED="${WarmPoolEnabled}" \
                     /usr/local/bin/bk-install-elastic-stack.sh
                   --==BOUNDARY==--
                 - LocalSecretsBucket: !If
@@ -2767,6 +2782,16 @@ Resources:
       Recurrence: !Ref ScaleDownSchedule
       MinSize: !Ref ScaleDownMinSize
       TimeZone: !Ref ScheduleTimezone
+
+  WarmPoolBootstrapLifecycleHook:
+    Condition: WarmPoolEnabled
+    Type: AWS::AutoScaling::LifecycleHook
+    Properties:
+      AutoScalingGroupName: !Ref AgentAutoScaleGroup
+      LifecycleHookName: WarmPoolBootstrap
+      LifecycleTransition: "autoscaling:EC2_INSTANCE_LAUNCHING"
+      DefaultResult: ABANDON
+      HeartbeatTimeout: 600
 
   AsgProcessSuspenderRole:
     Type: AWS::IAM::Role
